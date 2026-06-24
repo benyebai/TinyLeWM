@@ -53,6 +53,7 @@ META_DTYPE = np.dtype(
 )
 
 
+# take the file name, extract only the data we want using regex and put it into a dict
 def parse_filename(fname: str) -> dict:
     m = FNAME_RE.match(fname)
     if m is None:
@@ -60,12 +61,18 @@ def parse_filename(fname: str) -> dict:
     return m.groupdict()
 
 
+# take in the location of nes SMB dataset folder
 def index_dataset(src: Path) -> list[dict]:
     """Walk data-smb/, return one entry per episode with frames sorted by frame_idx."""
     episodes = []
+
+    # go through each file in the path
     for ep_dir in sorted(src.iterdir()):
+        # skip if not a dir
         if not ep_dir.is_dir():
             continue
+
+        # go through each image file
         frames = []
         for fname in os.listdir(ep_dir):
             if not fname.endswith(".png"):
@@ -105,6 +112,7 @@ def build(src: Path, out: Path, gzip_level: int = 4, chunk_frames: int = 64) -> 
     n_episodes = len(episodes)
     print(f"Found {n_episodes} episodes, {total_frames} frames total")
 
+    # check if parent folder valid
     out.parent.mkdir(parents=True, exist_ok=True)
 
     with h5py.File(out, "w") as h5:

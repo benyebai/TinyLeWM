@@ -34,10 +34,10 @@ A from-scratch reimplementation of **LeWorldModel** (Maes et al., March 2026) tr
 
 Two losses, end-to-end, no decoder during training:
 
-1. **Predictive loss** — encode frame `x_t` → embedding `s_t`. A transformer predictor takes `(s_{t-H..t}, a_{t..t+K-1})` and outputs `ŝ_{t+K}`. Train with MSE against `s_{t+K}` (from a target encoder, EMA of online).
+1. **Predictive loss** — encode frame `x_t` → embedding `s_t`. A transformer predictor takes `(s_{t-H..t}, a_{t..t+K-1})` and outputs `ŝ_{t+K}`. Train with MSE against `s_{t+K}`, **with gradients flowing through both sides** (the prediction target is just the same encoder running on a future frame in the same batch — no EMA, no stop-gradient, no target copy).
 2. **SIGReg** — Sketched-Isotropic-Gaussian Regularizer. Project embeddings onto random unit vectors, compare the resulting 1D distributions to N(0,1) using the Epps–Pulley statistic. Justified by the Cramér–Wold theorem (a distribution is determined by its 1D projections).
 
-That's it. No contrastive loss. No reconstruction. No latent actions. The representation is **shaped** by SIGReg and **made predictive** by the MSE loss.
+That's it. No contrastive loss. No reconstruction. No latent actions. No EMA or stop-gradient (LeWM's central pitch is that SIGReg alone prevents representation collapse — see Section 3.1 of the paper: "We do not employ stop-gradient, exponential moving averages, or additional stabilization heuristics"). The representation is **shaped** by SIGReg and **made predictive** by the MSE loss, with the whole system trained jointly end-to-end.
 
 For planning: encode a goal frame `s_g`, run CEM over action sequences in latent space, pick the sequence whose final predicted embedding minimizes `||ŝ_{t+H} − s_g||²`, execute first action, replan (MPC).
 
@@ -87,7 +87,6 @@ tinylewm/
 │   └── make_demo.py           # split-screen video generation
 ├── utils/
 │   ├── action_codes.py        # int code → 6-bit multi-hot
-│   ├── ema.py                 # target encoder EMA
 │   └── viz.py                 # frame grid, PCA scatter
 └── assets/
     └── demo_clips/            # final mp4 outputs
@@ -139,6 +138,8 @@ Expected compressed size ~17 GB (raw 50 GB; gzip 4 yields ~3× on game frames). 
 
 **Step 4. PyTorch Dataset + sanity check.** `datasets/smb_dataset.py`. `SMBSubTrajectoryDataset` yields sub-trajectories matching paper App. D: **4 frames at indices [t, t+5, t+10, t+15] + 4 action-blocks of 5 actions each** (frame-skip 5). Bilinear resize 240×256 → 224×224 via `cv2.resize(img, (224, 224), interpolation=cv2.INTER_AREA)`. Normalize uint8 → float32 in [−1, 1] via `(x/127.5) − 1`. Transpose NHWC → NCHW so frames are `[4, 3, 224, 224]`. Valid starting points filtered so no sub-trajectory straddles an episode boundary. **Use lazy-open HDF5 pattern** (open file in `_get_h5()` on first `__getitem__` call per worker) because `h5py.File` is not fork-safe across DataLoader workers — this is the single most common HDF5+PyTorch bug.
 
+**Action-frame alignment (gym/nes-py convention).** The action stored in filename `f100_a20` is the controller state held WHILE frame 100 is rendered — it's the action causally producing the transition `f_100 → f_101`. So `action_block[i]` of a sub-trajectory starting at frame `s` is `actions[s+5i : s+5i+5]` (e.g. block 0 = actions at indices `[s, s+1, s+2, s+3, s+4]`, which transition `f_s → f_{s+5}`). The 4th action block (`[s+15..s+19]`) has no observed target inside the sub-trajectory window — its prediction is dropped by the MSE loss slicing (`emb[:, 1:]` vs `next_emb[:, :-1]`). **Spot-check during Step 3**: find two consecutive frames where Mario clearly moves right, verify the Right bit is set in the BEFORE frame's action (not the after frame's). 95% confidence this is the convention, 100% after the spot-check.
+
 **Verification gate**: `scripts/phase1_sanity.py` loads one batch and asserts:
 
 - `batch["frames"]` shape `[128, 4, 3, 224, 224]`, dtype float32, value range in [−1, 1]
@@ -148,19 +149,28 @@ Save a 1×4 grid of one sub-trajectory's frames with multi-hot action labels ove
 
 ### Phase 2 — Model code (Steps 5–9)
 
-**Step 5. ViT-Tiny encoder.** `models/encoder.py`. Patch size 14, hidden 192, depth 12, heads 3, [CLS] token output. Add a BN-MLP projector (BN → Linear 192→384 → GELU → Linear 384→192). Online + EMA target copies.
+**Step 5. ViT-Tiny encoder + projector.** `models/encoder.py`. ViT-Tiny: patch size 14, hidden 192, depth 12, heads 3, ~5M params (use HuggingFace `transformers` or `timm` `vit_tiny_patch16_224` and swap patch size). Take the `[CLS]` token of the last layer as the raw image embedding (192d). Then **one** projector: 1-layer MLP with BatchNorm — `Linear(192 → 192) → BN(192)`. Paper note: this projector exists specifically to break the final LayerNorm of the ViT, which otherwise prevents SIGReg from shaping the embedding distribution. **Single network, no EMA, no target copy** — the file is just one `nn.Module` that does encode-then-project.
 
-**Step 6. Predictor.** `models/predictor.py`. **ViT-S backbone** (12 layers, hidden 384, 6 heads, ~22M params) with learned positional embeddings and causal masking over the observation history. Input projection layer maps 192d encoder outputs → 384d predictor space. History length = 3. AdaLN-Zero modulation: each action-block token produces scale/shift parameters injected into each layer's LN. During planning, used autoregressively to roll out future latent states.
+**Step 6. Predictor + projector.** `models/predictor.py` — **ALREADY WRITTEN**, see `predictor.py` in the workspace root. Transformer with **6 layers, 16 attention heads, hidden 384, 10% dropout** (per Section 3.1; with full AdaLN-Zero this comes to ~16M params, not the paper's ~10M — the discrepancy is because LeWM likely uses simpler AdaLN without the gate parameters; we use full AdaLN-Zero for stability/identity-at-init which is the more standard variant). Input embedding `Linear(192 → 384)` projects encoder outputs into the predictor's working dim. Action embedding `Linear(30 → 384)` where 30 = 5 actions × 6 buttons flattened per timestep. Learned positional embeddings. Causal mask over history (configurable; default `max_history=8` to allow rollout). **AdaLN-Zero action conditioning**: each block has 6 modulation tensors produced from the action embedding (shift_attn, scale_attn, gate_attn, shift_mlp, scale_mlp, gate_mlp). The modulation Linear is zero-initialized so all gates start at 0 → each block is identity at init → predictor starts as pass-through, learns to use actions gradually. Final `Linear(384 → 192)` maps back to embedding space, followed by a second projector with the same architecture as the encoder's: `Linear(192 → 192) → BN(192)`. Output: `ẑ_{t+1} ∈ ℝ^192`. Used autoregressively at planning time.
 
 **Step 7. SIGReg loss.** `models/sigreg.py`.
 - Sample `M=1024` random unit vectors `u_m ∈ ℝ^192` each step (re-sample is fine).
-- For each `u_m`: project the batch of embeddings → 1D values `z_m`.
+- For each `u_m`: project the batch of embeddings → 1D values `h_m = Z u_m`.
 - Compute Epps–Pulley statistic via numerical integration on `t ∈ [0.2, 4]` with `K=32` Gauss–Legendre nodes.
-- Sum/average over `m`, scale by `λ=0.1`.
+- Average over `m`. Then average across timesteps (step-wise SIGReg from the paper's pseudocode: `mean(SIGReg(emb.transpose(0, 1)))`).
+- Multiply final value by `λ=0.1`.
 
-**Step 8. Wire up loss.** Online encoder → predictor → MSE vs. target encoder (no grad through target). Total loss = MSE + SIGReg. Verify SIGReg falls when fed Gaussian noise (sanity check).
+**Step 8. Wire up loss.** Forward pass per the paper's Algorithm 1 pseudocode:
+```python
+emb = encoder(obs)               # (B, T, D=192)
+next_emb = predictor(emb, actions)  # (B, T, D=192), teacher-forced
+pred_loss = F.mse_loss(emb[:, 1:], next_emb[:, :-1])
+sigreg_loss = SIGReg(emb.transpose(0, 1)).mean()   # step-wise
+loss = pred_loss + 0.1 * sigreg_loss
+```
+**Both sides of the MSE see gradient.** No `detach()`, no stop-gradient, no EMA target. Sanity check: SIGReg should drop toward zero when fed a batch of unit-variance Gaussian noise.
 
-**Step 9. Training script.** `scripts/train_jepa.py`. AdamW (lr=3e-4, wd=0.05), cosine schedule with 1000-step warmup, batch 128, bf16 autocast, EMA decay 0.996 ramping to 1.0, gradient clip 1.0, 10 epochs (~30k steps). Wandb logging: MSE, SIGReg, total loss, lr, grad norm. Checkpoint every 5k steps.
+**Step 9. Training script.** `scripts/train_jepa.py`. AdamW (lr=3e-4, wd=0.05), cosine schedule with 1000-step warmup, batch 128, bf16 autocast, gradient clip 1.0, 10 epochs (~30k steps). All parameters (encoder, both projectors, predictor) optimized jointly in one pass. Wandb logging: `pred_loss`, `sigreg_loss`, total loss, lr, grad norm, embedding covariance rank (collapse early-warning). Checkpoint every 5k steps. **No EMA update step — there's no target network to update.**
 
 ### Phase 3 — Train + diagnose (Steps 10–14)
 
@@ -231,17 +241,16 @@ Single-page report: what LeWM is, what changes were made for Mario (categorical 
 | Frame skip | 5 | Matches NES @ 60Hz → 12 Hz effective |
 | History length H | 3 frames | LeWM paper |
 | Prediction horizon K | 5 actions | LeWM paper |
-| Encoder | ViT-Tiny (192d, 12L, 3H, patch 14) | LeWM paper App. D |
-| Predictor | **ViT-S** (12L, 384d, 6H), AdaLN-Zero | LeWM paper App. D |
+| Encoder | ViT-Tiny (192d, 12L, 3H, patch 14, ~5M params) + 1-layer Linear(192→192)+BN projector | LeWM paper §3.1 |
+| Predictor | 6L, 16H, hidden 384, 10% dropout, ~10M params, AdaLN-Zero action conditioning + 1-layer Linear(192→192)+BN projector | LeWM paper §3.1 |
 | SIGReg M | 1024 projections | LeWM paper App. A |
 | SIGReg K | 32 Gauss–Legendre nodes | LeWM paper App. A |
 | SIGReg integration | [0.2, 4] | LeWM paper App. A |
 | λ (SIGReg weight) | 0.1 | LeWM paper |
 | Optimizer | AdamW, lr 3e-4, wd 0.05 | LeWM paper |
 | Schedule | Cosine, 1000-step warmup | LeWM paper |
-| Batch size | 128 | H100 fit |
-| EMA decay | 0.996 → 1.0 | LeWM paper |
-| Total steps | ~30k (10 epochs) | LeWM paper |
+| Batch size | 128 | LeWM paper App. D |
+| Total steps | ~30k (10 epochs) | LeWM paper App. E |
 | Action encoding | 6-bit multi-hot (A,B,U,D,L,R) | TinyLeWM choice |
 | Planning CEM N | **300 candidates, 10 iters, top 30**, init var 1.0 | LeWM paper App. D |
 | MPC scheme | Execute full 5-action sequence, then replan | LeWM paper App. D |
@@ -268,21 +277,177 @@ Honest probabilities for the three demo goals:
 
 ---
 
-## 8. Timeline (rough)
+## 8. De-risking Ladder — What to Run Before Full Training
 
-| Day | Phase | Hours |
-|---|---|---|
-| 1 | Phase 1 (data) | 4–6 |
-| 2 | Phase 2 (model code) | 6–8 |
-| 3 | Phase 3 (train + diagnose) | 6 train + 2 analyze |
-| 4 | Phase 4 (decoder) | 4 |
-| 5 | Phase 5 (CEM planning) | 4–6 |
-| 6 | Phase 6 (demo) + Phase 7 (writeup) | 4 |
+**Do not write everything then hit "go" on a 6-hour training run.** Five cheap validation levels, each catching a different class of bug. Skipping any of them is asking for pain.
 
-**Total:** ~6 working days, ~30 hours of focused work.
+### Level 1 — Phase 1 sanity image (laptop, ~30 min)
+
+```bash
+python datasets/build_hdf5.py        # ~30 min single-threaded
+python scripts/phase1_sanity.py
+```
+
+Pass if: HDF5 file ~17 GB, `assets/phase1_sanity.png` shows recognizable Mario in temporal order with sensible action labels, `batch["frames"].shape == (128, 4, 3, 224, 224)`, `batch["actions"].shape == (128, 4, 5, 6)`, values in [−1, 1].
+
+Fail modes: scrambled colors (PNG mode P conversion missing), axis flip (H/W swapped), all-zero actions (filename parser or encoder bug), straddling episodes (`valid_starts` filter wrong).
+
+### Level 2 — Each model file's `__main__` (laptop, ~2 min)
+
+```bash
+python models/encoder.py
+python models/predictor.py
+python models/sigreg.py
+```
+
+Pass if:
+- Encoder: ~5.7M params, forward on `[B, 3, 224, 224]` returns `[B, 192]`
+- Predictor: ~16M params (with full AdaLN-Zero; ~10M if dropping gates), forward on `[B, T, 192]`+`[B, T, 30]` returns `[B, T, 192]`
+- SIGReg: small value on `torch.randn(128, 192)`, LARGE value on `torch.zeros(128, 192)` (must distinguish Gaussian from collapsed)
+
+### Level 3 — Overfit on 10 samples (any 16GB+ GPU, ~10 min)
+
+**THE single most important test.** If the model can't memorize 10 sub-trajectories, it can't learn anything.
+
+```python
+# scripts/test_overfit.py
+small_ds = torch.utils.data.Subset(ds, list(range(10)))
+# Train 2000 steps on the same 10 samples
+# Expect pred_loss to drop from ~1.0 to <0.01
+```
+
+Pass if: `pred_loss` drops to near-zero within 2000 steps.
+
+Fail modes:
+- Loss stays at ~1.0 → gradients aren't reaching the encoder or predictor (check `.grad` after `.backward()`)
+- Loss drops to 0 instantly → encoder collapsed to constant; SIGReg isn't doing its job
+- Loss NaN → numerical instability; lower lr or enable grad clip
+- Loss oscillates wildly → lr too high
+
+### Level 4 — 200-step smoke test (any 16GB+ GPU, ~20 min)
+
+```bash
+python scripts/train_jepa.py --max_steps 200 --log_every 10
+```
+
+Pass if: loss curves trend down without NaN, grad norm in 0.1–10 range, embedding covariance rank stays > 100, steps/sec in expected range for your GPU.
+
+### Level 5 — Full training (real GPU, ~6 hours)
+
+Only run after Levels 1–4 all pass. Checkpoint every 5k steps for rollback safety.
+
+### GPU Requirements
+
+| GPU | VRAM | Full training time | Use case |
+|---|---|---|---|
+| H100 | 80 GB | ~3 hr | Best |
+| L40S (paper's choice) | 48 GB | ~6 hr | Paper-matching |
+| A100 40GB | 40 GB | ~6 hr | Common cloud option |
+| RTX 4090 | 24 GB | ~8–10 hr | Workstation |
+| RTX 3090 | 24 GB | ~12 hr | Workable |
+| A10G (Databricks `g5.xlarge`) | 24 GB | ~10 hr | **Sweet spot for cost** |
+| Colab T4 free | 16 GB | 20+ hr | Sanity checks only |
+
+Use bf16 autocast (free 2× on Ampere+), `torch.compile` if available (~1.3× more), gradient accumulation if batch 128 doesn't fit.
 
 ---
 
-## 9. Next Action
+## 9. Timeline (rough)
 
-Step 1 — create the `tinylewm/` repo skeleton.
+| Day | Phase | Hours |
+|---|---|---|
+| 1 | Phase 1 (data) + Levels 1 | 4–6 |
+| 2 | Phase 2 (model code) + Level 2 | 6–8 |
+| 3 | Levels 3–4 (overfit + smoke) | 3 |
+| 4 | Phase 3 — Level 5 (full train) + diagnostics | 6 train + 2 analyze |
+| 5 | Phase 4 (decoder) | 4 |
+| 6 | Phase 5 (CEM planning) | 4–6 |
+| 7 | Phase 6 (demo) + Phase 7 (writeup) | 4 |
+
+**Total:** ~7 working days, ~35 hours of focused work.
+
+---
+
+## 10. Current Progress
+
+**Completed:**
+- [x] Read paper Sections 3.1, 3.2, Appendices A, D, E
+- [x] Verified dataset adequacy (737k frames vs paper's TwoRoom 920k baseline)
+- [x] Confirmed action bit-to-button mapping from SMB dataset README (`A=128, Up=64, Left=32, B=16, Right=4, Down=2`; Select/Start never set)
+- [x] Wrote `predictor.py` (in workspace root — needs to be copied to `tinylewm/models/predictor.py`)
+- [x] Phase 1 Step 1 (repo skeleton)
+
+**In progress:**
+- [ ] Phase 1 Step 2 — `utils/action_codes.py` (action encoder)
+
+**Next up (in order):**
+1. Finish `utils/action_codes.py` (Step 2)
+2. Write `datasets/build_hdf5.py` (Step 3) — biggest data step
+3. Write `datasets/smb_dataset.py` (Step 4)
+4. Run Level 1 (Phase 1 sanity)
+5. Write `models/encoder.py` (Step 5, ~20 lines wrapping HF ViTModel)
+6. Move existing `predictor.py` into `tinylewm/models/predictor.py`
+7. Write `models/sigreg.py` (Step 7)
+8. Run Level 2 (model file self-tests)
+9. Write `scripts/train_jepa.py` and `scripts/test_overfit.py`
+10. Run Levels 3, 4, then 5
+
+**Files already written (in this session):**
+- `predictor.py` at workspace root — copy to `tinylewm/models/predictor.py`
+
+**Files NOT yet written (to do):**
+- `utils/action_codes.py`
+- `datasets/build_hdf5.py`
+- `datasets/smb_dataset.py`
+- `scripts/phase1_sanity.py`
+- `models/encoder.py`
+- `models/sigreg.py`
+- `models/decoder.py` (Phase 4 only)
+- `scripts/test_overfit.py`
+- `scripts/train_jepa.py`
+- `scripts/eval_rollout.py`
+- `scripts/plan_cem.py`
+- `scripts/make_demo.py`
+
+---
+
+## 11. Key Decisions & Conventions (one-pagers for handoff)
+
+### Action encoding
+- Source: SMB dataset README ([github.com/rafaelcp/smbdataset](https://github.com/rafaelcp/smbdataset))
+- Bit-to-button: `bit 7=A, 6=Up, 5=Left, 4=B, 3=Start, 2=Right, 1=Down, 0=Select`
+- 6-dim multi-hot order: `[Left(bit5), Right(bit2), Up(bit6), Down(bit1), A(bit7), B(bit4)]`
+- Bits 0 (Select) and 3 (Start) are never set in our data — dropped
+- Action stored at frame N is held DURING frame N, applied to produce frame N+1
+- Action block for transition `f_s → f_{s+5}` = `actions[s : s+5]`
+
+### Data shapes through the pipeline
+```
+DataLoader output:      [128, 4, 3, 224, 224]    frames + [128, 4, 5, 6]    actions
+                                                    ↓ flatten time
+Encoder input:          [512, 3, 224, 224]
+Encoder output:         [512, 192]
+                                                    ↓ reshape
+Predictor input:        emb [128, 4, 192]  +  actions [128, 4, 30]    (5×6 flattened)
+Predictor output:       next_emb [128, 4, 192]
+Loss:                   F.mse_loss(emb[:, 1:], next_emb[:, :-1])
+SIGReg:                 mean(SIGReg(emb.transpose(0, 1)))   # step-wise
+Total loss:             pred_loss + 0.1 * sigreg_loss
+```
+
+### Training principles (paper-faithful)
+- **No EMA target encoder.** Single encoder, both sides of MSE see gradient.
+- **No stop-gradient.** End-to-end backprop through everything.
+- **No pretrained weights.** ViT-Tiny initialized random, trained from scratch.
+- **Two losses, joint optimization.** AdamW updates encoder + predictor + projectors + AdaLN params all together.
+- **The projector exists** specifically to break the encoder's final LayerNorm so SIGReg can shape the embedding distribution.
+
+### Hardware
+- Target: any 24GB+ GPU. Sweet spot for cost: Databricks `g5.xlarge` (A10G, 24 GB).
+- bf16 autocast + `torch.compile` recommended.
+
+---
+
+## 12. Next Action
+
+**Continue Phase 1 Step 2** — write `utils/action_codes.py` with the confirmed `BUTTON_BITS` mapping and unit tests against the top-5 action codes (a0, a4, a20, a148, a48). Then move on to Step 3 (HDF5 builder).
