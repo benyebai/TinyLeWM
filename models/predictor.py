@@ -10,10 +10,11 @@ class ARPredictor(nn.Module):  # autoregressive predictor
         # this is for adding our position embedding, so each 128 batches has a group of 4
         # we want these 4 to learn the ordering, so we will create a 4 different 192 vectors
         self.positional_emb = nn.Parameter(torch.randn(1, num_frame, input_dim))
+        self.dropout = nn.Dropout(p=0.1)
 
     def forward(self, x):
         T = x.size(1)  # get the T from the input
         # just means get everything but for the middle dim get the first T
         x = x + self.positional_emb[:, :T]
-
+        x = self.dropout(x)
         return x
