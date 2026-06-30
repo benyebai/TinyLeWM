@@ -13,6 +13,23 @@ class ARPredictor(nn.Module):  # autoregressive predictor
         self.positional_emb = nn.Parameter(torch.randn(1, num_frame, input_dim))
         self.dropout = nn.Dropout(p=0.1)
 
+        # this should just be a simple projector to our 192 space if its not 192
+        # self.input_proj
+        # self.cond_proj
+
+        # we will hop over the attention blocks for now and go straight into the feed forward.
+
+        # this is the mlp feed forward (supposedly super standard)
+        # now u need activation sandwiched between 2 linears duh
+        self.feed_forward = nn.Sequential(
+            nn.LayerNorm(),  # lets standarize our inputs first
+            nn.Linear(input_dim, 2048),
+            nn.GELU(),
+            nn.Dropout(p=0.1),
+            nn.Linear(2048, input_dim),
+            nn.Dropout(p=0.1),
+        )
+
     def forward(self, x):
         T = x.size(1)  # get the T from the input
         # just means get everything but for the middle dim get the first T
