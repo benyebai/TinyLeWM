@@ -17,16 +17,24 @@ class ARPredictor(nn.Module):  # autoregressive predictor
         # self.input_proj
         # self.cond_proj
 
-        # we will hop over the attention blocks for now and go straight into the feed forward.
+        # the actual tranformer blocks now (and just quickly we always basically do muilti-headed)
+        # think a single attention KQV, then just one guys opinion kinda sux, we want muitiple people
+        # learning their part and then combining them!
+
+        self.attention = nn.Sequential(
+            nn.LayerNorm(input_dim),  # lets standarize our inputs first
+        )
 
         # this is the mlp feed forward (supposedly super standard)
         # now u need activation sandwiched between 2 linears duh
         self.feed_forward = nn.Sequential(
-            nn.LayerNorm(),  # lets standarize our inputs first
+            nn.LayerNorm(input_dim),  # lets standarize our inputs first
             nn.Linear(input_dim, 2048),
             nn.GELU(),
+            # this first dropout is to make sure the actual internal scratch board isnt dependent on something
             nn.Dropout(p=0.1),
             nn.Linear(2048, input_dim),
+            # later this result will be the residual, we also dont want later attention blocks to be dependent
             nn.Dropout(p=0.1),
         )
 
