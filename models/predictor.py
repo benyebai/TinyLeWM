@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from models.attention import Attention
+
 
 # our embedding from our video encoder is [128, 4, 192]
 class ARPredictor(nn.Module):  # autoregressive predictor
@@ -20,10 +22,7 @@ class ARPredictor(nn.Module):  # autoregressive predictor
         # the actual tranformer blocks now (and just quickly we always basically do muilti-headed)
         # think a single attention KQV, then just one guys opinion kinda sux, we want muitiple people
         # learning their part and then combining them!
-
-        self.attention = nn.Sequential(
-            nn.LayerNorm(input_dim),  # lets standarize our inputs first
-        )
+        self.attention = Attention(input_dim)
 
         # this is the mlp feed forward (supposedly super standard)
         # now u need activation sandwiched between 2 linears duh
