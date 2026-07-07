@@ -7,6 +7,7 @@ class Attention(nn.Module):
         super().__init__()
         self.heads = heads
         self.head_dim = head_dim
+        self.dropout = nn.Dropout(p=0.1)
 
         # normalize our tensor
         self.norm = nn.LayerNorm(init_dim)
@@ -36,7 +37,7 @@ class Attention(nn.Module):
         # [B, H, T, D] x [B, H, D, T] = [B, H, T, T]
         scores = q @ k.transpose(-2, -1)
         # divide by the sqrt of dk
-        scores /= (self.head_dim) ** (1 / 2)
+        scores = scores / (self.head_dim) ** (1 / 2)
         mask = torch.triu(
             torch.ones(T, T, device=scores.device, dtype=torch.bool), diagonal=1
         )
@@ -48,4 +49,5 @@ class Attention(nn.Module):
         out = out.transpose(1, 2)  # [B, T, H, D]
         out = out.reshape(B, T, self.heads * self.head_dim)  # [B, T, H*D]
         out = self.backToInitDim(out)
+        out = self.dropout(out)
         return out
