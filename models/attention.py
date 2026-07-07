@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from requests.api import head
 
 
 class Attention(nn.Module):
@@ -37,7 +36,11 @@ class Attention(nn.Module):
         # [B, H, T, D] x [B, H, D, T] = [B, H, T, T]
         scores = q @ k.transpose(-2, -1)
         # divide by the sqrt of dk
-        scores /= (self.heads * self.head_dim) ** (1 / 2)
+        scores /= (self.head_dim) ** (1 / 2)
+        mask = torch.triu(
+            torch.ones(T, T, device=scores.device, dtype=torch.bool), diagonal=1
+        )
+        scores = scores.masked_fill(mask, float("-inf"))
         attn = torch.softmax(scores, dim=-1)
         out = attn @ v
 
