@@ -14,7 +14,7 @@ class Attention(nn.Module):
         # now each head gets 64 so 16*64=1024 total per token
         # so 192 -> 1024 except 3 because K and Q and V
         self.toQKV = nn.Linear(init_dim, 3 * heads * head_dim)
-        self.backToInitDim = nn.Linear(init_dim, heads * head_dim)
+        self.backToInitDim = nn.Linear(heads * head_dim, init_dim)
 
     def forward(self, x: torch.Tensor):
         # x is shaped somthing like [B, T, 192]
@@ -34,8 +34,10 @@ class Attention(nn.Module):
 
         # now its time for classic Attention
         # now to do the q x k is simple:
-        # [B, H, T, D] x [B, H, D, T]
+        # [B, H, T, D] x [B, H, D, T] = [B, H, T, T]
         scores = q @ k.transpose(-2, -1)
+        # divide by the sqrt of dk
+        scores /= (self.heads * self.head_dim) ** (1 / 2)
         attn = torch.softmax(scores, dim=-1)
         out = attn @ v
 
