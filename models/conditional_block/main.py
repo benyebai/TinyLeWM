@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-
 from conditional_block.attention import Attention
+
 
 # From my understanding this whole conditional block is we want to introduce 3 different transformations ontop of our predictor
 # To understand it intuitively:
@@ -9,10 +9,13 @@ from conditional_block.attention import Attention
 # This block will be ran 6 times, each time the next embedding will be steered towards the predicted latent embedding
 # 1) attention block gathers a summary and context of whats happening on screen
 # 2) the mlp then tries to turn that into a concept an understanding of the world and predicts a piece of the next latent embedding
+# 3) rinse and repeate 6 times and the whole picture will be pieced together
 #
+# Now what does the conditional do:
 # scale: which can turn specific features high or low, so if its an up input, turn the vertical motion features way up
 # shift: its just adds constants onto the features
 # gate: now after attention or the FFN, perhaps u think the change is not important, x = x + gate * change
+# so now our pieces can be modified based on the action as well
 class ConditionalBlock(nn.Module):
     def __init__(self, init_dim):
         super().__init__()
@@ -34,5 +37,14 @@ class ConditionalBlock(nn.Module):
             nn.Dropout(p=0.1),
         )
 
+        # self.thing = get 6 different weights
+
     # x is the embedded frames, c is the associated emebedded actions
     def forward(self, x: torch.Tensor, c: torch.Tensor):
+        # a b c d e f = self.thing(c)
+
+        x = self.attention(x)
+        x = x + c * (a * (x + b))
+        x = self.feed_forward(x)
+        x = x + f * (d * (x + e))
+        return x
