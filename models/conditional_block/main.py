@@ -54,11 +54,11 @@ class ConditionalBlock(nn.Module):
         # [B, T, 192x6]
         modulations = self.adaLN_modulation(c)
         # each is [B, T, 192]
-        a, b, c, d, e, f = modulations.chunk(6, -1)
+        shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = modulations.chunk(6, -1)
 
         x = self.normalize(x)
-        x = x + c * modulate(self.attention(x), a, b)
+        x = x + gate_a * modulate(self.attention(x), shift_a, scale_a)
         x = self.normalize(x)
-        x = x + f * modulate(self.feed_forward(x), d, e)
+        x = x + gate_m * modulate(self.feed_forward(x), shift_m, scale_m)
 
         return x
