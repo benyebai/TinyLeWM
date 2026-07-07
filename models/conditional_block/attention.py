@@ -9,8 +9,6 @@ class Attention(nn.Module):
         self.head_dim = head_dim
         self.dropout = nn.Dropout(p=0.1)
 
-        # normalize our tensor
-        self.norm = nn.LayerNorm(init_dim)
         # now each head gets 64 so 16*64=1024 total per token
         # so 192 -> 1024 except 3 because K and Q and V
         self.toQKV = nn.Linear(init_dim, 3 * heads * head_dim)
@@ -18,7 +16,6 @@ class Attention(nn.Module):
 
     def forward(self, x: torch.Tensor):
         # x is shaped somthing like [B, T, 192]
-        x = self.norm(x)
         # create the Q, K, V
         # shape is now [B, T, 1024x3]
         qkv = self.toQKV(x)

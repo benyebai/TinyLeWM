@@ -3,6 +3,11 @@ import torch.nn as nn
 from conditional_block.attention import Attention
 
 
+# for the Adaptive LayerNorm
+def modulate(t, shift, scale):
+    return t * (1 + scale) + shift
+
+
 # From my understanding this whole conditional block is we want to introduce 3 different transformations ontop of our predictor
 # To understand it intuitively:
 #
@@ -19,6 +24,9 @@ from conditional_block.attention import Attention
 class ConditionalBlock(nn.Module):
     def __init__(self, init_dim):
         super().__init__()
+
+        self.normalize = nn.LayerNorm(init_dim, elementwise_affine=False)
+
         # the actual tranformer blocks now (and just quickly we always basically do muilti-headed)
         # think a single attention KQV, then just one guys opinion kinda sux, we want muitiple people
         # learning their part and then combining them!
@@ -27,7 +35,6 @@ class ConditionalBlock(nn.Module):
         # this is the mlp feed forward (supposedly super standard)
         # now u need activation sandwiched between 2 linears duh
         self.feed_forward = nn.Sequential(
-            nn.LayerNorm(init_dim),  # lets standarize our inputs first
             nn.Linear(init_dim, 2048),
             nn.GELU(),
             # this first dropout is to make sure the actual internal scratch board isnt dependent on something
@@ -37,14 +44,21 @@ class ConditionalBlock(nn.Module):
             nn.Dropout(p=0.1),
         )
 
-        # self.thing = get 6 different weights
+        # creates the 6 modulations (but they are combined all into one)
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(), nn.Linear(init_dim, 6 * init_dim)
+        )
 
     # x is the embedded frames, c is the associated emebedded actions
     def forward(self, x: torch.Tensor, c: torch.Tensor):
-        # a b c d e f = self.thing(c)
+        # [B, T, 192x6]
+        modulations = self.adaLN_modulation(c)
+        # each is [B, T, 192]
+        a, b, c, d, e, f = modulations.chunk(6, -1)
 
-        x = self.attention(x)
-        x = x + c * (a * (x + b))
-        x = self.feed_forward(x)
-        x = x + f * (d * (x + e))
+        x = self.normalize(x)
+        x = x + c * modulate(self.attention(x), a, b)
+        x = self.normalize(x)
+        x = x + f * modulate(self.feed_forward(x), d, e)
+
         return x
