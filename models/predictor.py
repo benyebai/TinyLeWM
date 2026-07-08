@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from models.conditional_block.main import ConditionalBlock
+
 
 # our embedding from our video encoder is [128, 4, 192]
 class ARPredictor(nn.Module):  # autoregressive predictor
@@ -13,11 +15,10 @@ class ARPredictor(nn.Module):  # autoregressive predictor
         self.positional_emb = nn.Parameter(torch.randn(1, num_frame, input_dim))
         self.dropout = nn.Dropout(p=0.1)
 
-        # this should just be a simple projector to our 192 space if its not 192
-        # self.input_proj
-        # self.cond_proj
+        # pytorch note: sequential only pipes 1 singular tensor through, so modulelist isntead
+        self.blocks = nn.ModuleList([ConditionalBlock(input_dim) for _ in range(6)])
 
-    def forward(self, x):
+    def forward(self, x, c):
         T = x.size(1)  # get the T from the input
         # just means get everything but for the middle dim get the first T
         x = x + self.positional_emb[:, :T]
@@ -25,4 +26,8 @@ class ARPredictor(nn.Module):  # autoregressive predictor
         # it might learn based on just our data, we need it to learn more genreally
         # get to an answer from multiple routes
         x = self.dropout(x)
+
+        for b in self.blocks:
+            x = b(x, c)
+
         return x
