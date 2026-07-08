@@ -56,9 +56,10 @@ class ConditionalBlock(nn.Module):
         # each is [B, T, 192]
         shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = modulations.chunk(6, -1)
 
-        x = self.normalize(x)
-        x = x + gate_a * modulate(self.attention(x), shift_a, scale_a)
-        x = self.normalize(x)
-        x = x + gate_m * modulate(self.feed_forward(x), shift_m, scale_m)
+        # custom layernorm, then apply attention/FFN
+        x = x + gate_a * self.attention(modulate(self.normalize(x), shift_a, scale_a))
+        x = x + gate_m * self.feed_forward(
+            modulate(self.normalize(x), shift_m, scale_m)
+        )
 
         return x
