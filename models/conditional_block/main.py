@@ -44,10 +44,12 @@ class ConditionalBlock(nn.Module):
             nn.Dropout(p=0.1),
         )
 
+        self.adaLN_proj = nn.Linear(init_dim, 6 * init_dim)
         # creates the 6 modulations (but they are combined all into one)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(), nn.Linear(init_dim, 6 * init_dim)
-        )
+        self.adaLN_modulation = nn.Sequential(nn.SiLU(), self.adaLN_proj)
+        # and we are using adaLNZero, so we have to initialize the weights and bias to 0 first
+        nn.init.constant_(self.adaLN_proj.weight, 0)
+        nn.init.constant_(self.adaLN_proj.bias, 0)
 
     # x is the embedded frames, c is the associated emebedded actions
     def forward(self, x: torch.Tensor, c: torch.Tensor):
