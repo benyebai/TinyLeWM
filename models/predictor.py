@@ -15,8 +15,16 @@ class ARPredictor(nn.Module):  # autoregressive predictor
         self.positional_emb = nn.Parameter(torch.randn(1, num_frame, input_dim))
         self.dropout = nn.Dropout(p=0.1)
 
+        # this shuld just be a simple project to our 192 if its not 192 (but we always just 192)
+        # but im not going to write
+        # input_projector / cond_projector
+
         # pytorch note: sequential only pipes 1 singular tensor through, so modulelist isntead
         self.blocks = nn.ModuleList([ConditionalBlock(input_dim) for _ in range(6)])
+
+        self.normalize = nn.LayerNorm(input_dim)
+
+        # if not 192 then u should project it back, dont matter for us tho
 
     def forward(self, x, c):
         T = x.size(1)  # get the T from the input
@@ -29,5 +37,7 @@ class ARPredictor(nn.Module):  # autoregressive predictor
 
         for b in self.blocks:
             x = b(x, c)
+
+        x = self.normalize(x)
 
         return x
