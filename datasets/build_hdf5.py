@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import sys
 from pathlib import Path
 
 import h5py
@@ -27,8 +26,6 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
-# Make `utils.action_codes` importable when run as a script from the repo root.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils.action_codes import action_code_to_multihot, action_codes_to_multihot
 
 # PIL gives H x W x C, and the SMB PNGs are 240 high x 256 wide.

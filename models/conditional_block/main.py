@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from conditional_block.attention import Attention
+from models.conditional_block.attention import Attention
 
 
 # for the Adaptive LayerNorm
