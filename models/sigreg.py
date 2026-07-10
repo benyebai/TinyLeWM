@@ -24,7 +24,7 @@ class SigReg(nn.Module):
         t = torch.linspace(0, 3, knots)
         dt = 3 / (knots - 1)
         window = torch.exp(-(t**2) / 2)  # the phi
-        weights = torch.full((17,), dt * 2)
+        weights = torch.full((knots,), dt * 2)
         weights[0], weights[-1] = dt, dt
         weights = (
             weights * window
