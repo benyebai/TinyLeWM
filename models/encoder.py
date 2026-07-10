@@ -12,6 +12,7 @@ class Encoder(nn.Module):
                 hidden_size=192,
                 num_hidden_layers=12,
                 num_attention_heads=3,
+                intermediate_size=768,
             )
         )
 

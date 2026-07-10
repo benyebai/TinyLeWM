@@ -19,11 +19,12 @@ class Jepa(nn.Module):
 
     def encode(self, pixels, actions):
         # pixels: [B, T, C, H, W]
-        # actions: [B, T, 30]
         B = pixels.size(0)
         pixels = rearrange(pixels, "b t c h w -> (b t) c h w")
         emb = self.encoder(pixels)
         emb = rearrange(emb, "(b t) d -> b t d", b=B)
+        # actions: [B, T, 5, 6] -> [B, T, 30]
+        actions = actions.flatten(start_dim=2)
         act_emb = self.action_encoder(actions)
         return emb, act_emb
 
