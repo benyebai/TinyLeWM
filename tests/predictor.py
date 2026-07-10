@@ -1,5 +1,10 @@
 import torch
 
+try:
+    import _bootstrap  # noqa: F401
+except ModuleNotFoundError:
+    import tests._bootstrap as _bootstrap  # noqa: F401
+
 from models.predictor import ARPredictor
 
 if __name__ == "__main__":
