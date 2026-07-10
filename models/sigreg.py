@@ -1,4 +1,3 @@
-from numpy import exp
 import torch
 import torch.nn as nn
 
@@ -23,9 +22,14 @@ class SigReg(nn.Module):
         super().__init__()
         self.t = torch.linspace(0, 3, knots)
         self.dt = 3 / (knots - 1)
-        self.window = exp(-self.t**2 / 2) # the phi
-        self.weights = [2*self.dt]*knots
-        self.weights[0], self.weights[1] = self.dt, self.dt
+        self.window = torch.exp(-self.t**2 / 2) # the phi
+        self.weights = torch.full((17,), self.dt * 2)
+        self.weights[0], self.weights[-1] = self.dt, self.dt
+
+
+        self.register_buffer("t", self.t)
+        self.register_buffer("window", self.window)
+        self.register_buffer("weights", self.weights)
 
 
     def forward(self, emb):
