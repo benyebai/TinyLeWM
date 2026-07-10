@@ -20,19 +20,37 @@ class SigReg(nn.Module):
     # t: the actual values of the t's
     def __init__(self, knots=17, num_arrows=1024):
         super().__init__()
-        self.t = torch.linspace(0, 3, knots)
-        self.dt = 3 / (knots - 1)
-        self.window = torch.exp(-self.t**2 / 2) # the phi
-        self.weights = torch.full((17,), self.dt * 2)
-        self.weights[0], self.weights[-1] = self.dt, self.dt
+        self.num_arrows = num_arrows
+        t = torch.linspace(0, 3, knots)
+        dt = 3 / (knots - 1)
+        window = torch.exp(-(t**2) / 2)  # the phi
+        weights = torch.full((17,), dt * 2)
+        weights[0], weights[-1] = dt, dt
+        weights = (
+            weights * window
+        )  # this calculates the importance of that t in our final weight
+        # because u are adding all the t's together, but some of them are more usless than others
 
+        self.register_buffer("t", t)
+        self.register_buffer("window", window)
+        self.register_buffer("weights", weights)
 
-        self.register_buffer("t", self.t)
-        self.register_buffer("window", self.window)
-        self.register_buffer("weights", self.weights)
+    # NOTE: we are checking if each time steps is gaussian, so group t1 together, then t2, etc
+    def forward(self, emb):  # emb will come in as [T, B, D]
 
-
-    def forward(self, emb):
         # for each arrow through the cloud of embeddings
+        # A: [D, 1024]
+        A = torch.randn(emb.size(-1), self.num_arrows, device=emb.device)
+        A = A / A.norm(p=2, dim=0)
+
         #   do the dot product for each embedding
-        #       sum [B, T, 192], for each of the embeddings cos(t * x) / BxT for the average
+        shadows = emb @ A
+        #       sum [B, T, 192], for each of the embeddings cos(t * x) / BxT for the average (and all these steps for sin)
+        x_t = shadows.unsqueeze(-1) * self.t
+        cos_avg = x_t.cos().mean(dim=1)
+        sin_avg = x_t.sin().mean(dim=1)
+        #       compare to target and get error score
+        err = (cos_avg - self.window).square() + sin_avg.square()
+        # then turn it into one number (get weighted sum, then average it)
+        statistic = (err @ self.weights) * emb.size(1)  # (T, num_arrows)
+        return statistic.mean()
