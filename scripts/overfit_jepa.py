@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, Subset
 from datasets.smb_dataset import SMBSubTrajectoryDataset
 from models.jepa import Jepa
 from models.sigreg import SigReg
-from scripts.train_jepa import get_lr_scheduler, train_step
+from scripts.train_jepa import get_lr_scheduler, optimization_step
 
 
 def main() -> None:
@@ -58,19 +58,14 @@ def main() -> None:
     )
 
     for step in range(1, args.steps + 1):
-        jepa.train()
-        optimizer.zero_grad(set_to_none=True)
-
-        total_loss, pred_loss, sigreg_loss = train_step(
+        total_loss, pred_loss, sigreg_loss, grad_norm = optimization_step(
             jepa,
             sigreg,
+            optimizer,
+            scheduler,
             pixels,
             actions,
         )
-        total_loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(jepa.parameters(), max_norm=1.0)
-        optimizer.step()
-        scheduler.step()
 
         pred_value = pred_loss.item()
         if initial_pred is None:

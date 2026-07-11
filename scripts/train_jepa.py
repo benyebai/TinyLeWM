@@ -28,6 +28,51 @@ def train_step(jepa: Jepa, sigreg: SigReg, pixels, actions, lmbda=0.1):
     return total_loss, pred_loss, sigreg_loss
 
 
+def optimization_step(
+    jepa: Jepa,
+    sigreg: SigReg,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    pixels: torch.Tensor,
+    actions: torch.Tensor,
+    max_grad_norm: float = 1.0,
+    lmbda: float = 0.1,
+):
+    """Run one complete model update and return detached metrics."""
+    jepa.train()
+    optimizer.zero_grad(set_to_none=True)
+
+    total_loss, pred_loss, sigreg_loss = train_step(
+        jepa,
+        sigreg,
+        pixels,
+        actions,
+        lmbda=lmbda,
+    )
+
+    losses = (total_loss, pred_loss, sigreg_loss)
+    if not all(torch.isfinite(loss).item() for loss in losses):
+        raise FloatingPointError("Training produced a non-finite loss")
+
+    total_loss.backward()
+    grad_norm = torch.nn.utils.clip_grad_norm_(
+        jepa.parameters(),
+        max_norm=max_grad_norm,
+    )
+    if not torch.isfinite(grad_norm).item():
+        raise FloatingPointError("Training produced a non-finite gradient norm")
+
+    optimizer.step()
+    scheduler.step()
+
+    return (
+        total_loss.detach(),
+        pred_loss.detach(),
+        sigreg_loss.detach(),
+        grad_norm.detach(),
+    )
+
+
 def get_lr_scheduler(
     optimizer: torch.optim.Optimizer,
     total_steps: int,
@@ -98,27 +143,15 @@ def main():
             pixels = batch["frames"].to(device, non_blocking=True)
             actions = batch["actions"].to(device, non_blocking=True)
 
-            # clear the gradients left over from the previous step.
-            optimizer.zero_grad(set_to_none=True)
-            # get the 3 losses
-            total_loss, pred_loss, sigreg_loss = train_step(
+            total_loss, pred_loss, sigreg_loss, grad_norm = optimization_step(
                 jepa,
                 sigreg,
+                optimizer,
+                scheduler,
                 pixels,
                 actions,
+                max_grad_norm=max_grad_norm,
             )
-            # backpropagate the total loss. calculates and stores gradients
-            total_loss.backward()
-            # basically jepa's gradient can get too big the steps so we want them less than 1
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                jepa.parameters(),
-                max_norm=max_grad_norm,
-            )
-            # Update the model parameters.
-            optimizer.step()
-
-            # Update the learning rate for the next iteration.
-            scheduler.step()
 
             global_step += 1
 

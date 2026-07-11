@@ -14,7 +14,7 @@ Each sample returns:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import cv2  # type: ignore[import-untyped]
 import h5py  # type: ignore[import-untyped]
@@ -32,6 +32,7 @@ class SMBSubTrajectoryDataset(Dataset):
         num_frames: int = 4,
         frame_skip: int = 5,
         image_size: int = 224,
+        episode_indices: Sequence[int] | np.ndarray | None = None,
     ) -> None:
         self.h5_path = Path(h5_path)
         self.num_frames = num_frames
@@ -47,7 +48,29 @@ class SMBSubTrajectoryDataset(Dataset):
             raise ValueError("image_size must be at least 1")
 
         with h5py.File(self.h5_path, "r") as h5:
-            self.starts = self._build_valid_starts(h5["episodes"][:])
+            episodes = h5["episodes"][:]
+            self.episode_indices = self._validate_episode_indices(
+                episode_indices,
+                num_episodes=len(episodes),
+            )
+            self.starts = self._build_valid_starts(episodes[self.episode_indices])
+
+    @staticmethod
+    def _validate_episode_indices(
+        episode_indices: Sequence[int] | np.ndarray | None,
+        num_episodes: int,
+    ) -> np.ndarray:
+        if episode_indices is None:
+            return np.arange(num_episodes, dtype=np.int64)
+
+        indices = np.asarray(episode_indices, dtype=np.int64)
+        if indices.ndim != 1 or indices.size == 0:
+            raise ValueError("episode_indices must be a non-empty 1D sequence")
+        if np.unique(indices).size != indices.size:
+            raise ValueError("episode_indices must not contain duplicates")
+        if indices.min() < 0 or indices.max() >= num_episodes:
+            raise IndexError("episode index is outside the HDF5 episode table")
+        return np.sort(indices)
 
     def _build_valid_starts(self, episodes: np.ndarray) -> np.ndarray:
         """Return global frame indices whose full sample stays inside an episode."""

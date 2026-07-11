@@ -1,7 +1,6 @@
 """Run a short varied-batch training test and check basic stability."""
 
 import argparse
-import math
 from pathlib import Path
 
 import torch
@@ -10,7 +9,7 @@ from torch.utils.data import DataLoader
 from datasets.smb_dataset import SMBSubTrajectoryDataset
 from models.jepa import Jepa
 from models.sigreg import SigReg
-from scripts.train_jepa import get_lr_scheduler, train_step
+from scripts.train_jepa import get_lr_scheduler, optimization_step
 
 
 def main() -> None:
@@ -60,31 +59,17 @@ def main() -> None:
             if step >= args.steps:
                 break
 
-            jepa.train()
             pixels = batch["frames"].to(device, non_blocking=True)
             actions = batch["actions"].to(device, non_blocking=True)
 
-            optimizer.zero_grad(set_to_none=True)
-            total_loss, pred_loss, sigreg_loss = train_step(
+            total_loss, pred_loss, sigreg_loss, grad_norm = optimization_step(
                 jepa,
                 sigreg,
+                optimizer,
+                scheduler,
                 pixels,
                 actions,
             )
-
-            metrics = (total_loss, pred_loss, sigreg_loss)
-            if not all(math.isfinite(metric.item()) for metric in metrics):
-                raise SystemExit(f"FAIL: non-finite loss at step {step + 1}")
-
-            total_loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                jepa.parameters(), max_norm=1.0
-            )
-            if not math.isfinite(grad_norm.item()):
-                raise SystemExit(f"FAIL: non-finite gradient at step {step + 1}")
-
-            optimizer.step()
-            scheduler.step()
             step += 1
 
             pred_history.append(pred_loss.item())
