@@ -25,6 +25,11 @@ def main() -> None:
 
     torch.manual_seed(0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    precision = (
+        "bf16"
+        if device.type == "cuda" and torch.cuda.is_bf16_supported()
+        else "float32"
+    )
 
     dataset = SMBSubTrajectoryDataset(args.h5)
     dataloader = DataLoader(
@@ -51,7 +56,7 @@ def main() -> None:
 
     print(
         f"Running {args.steps} smoke-test steps with batch size "
-        f"{args.batch_size} on {device.type}"
+        f"{args.batch_size} on {device.type} using {precision}"
     )
 
     while step < args.steps:

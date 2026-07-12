@@ -28,6 +28,11 @@ def main() -> None:
 
     torch.manual_seed(0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    precision = (
+        "bf16"
+        if device.type == "cuda" and torch.cuda.is_bf16_supported()
+        else "float32"
+    )
 
     dataset = SMBSubTrajectoryDataset(args.h5)
     if args.samples > len(dataset):
@@ -54,7 +59,7 @@ def main() -> None:
 
     print(
         f"Overfitting {args.samples} fixed samples for {args.steps} steps "
-        f"on {device.type}"
+        f"on {device.type} using {precision}"
     )
 
     for step in range(1, args.steps + 1):
