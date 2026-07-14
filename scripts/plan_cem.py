@@ -1,4 +1,4 @@
-"""Categorical CEM planning in TinyLeWM's latent space."""
+"""Categorical CEM planning in LeMario's latent space."""
 
 from __future__ import annotations
 
@@ -82,6 +82,7 @@ def cem_plan(
     elites: int = 30,
     iterations: int = 10,
     horizon: int = 5,
+    score_function=None,
 ) -> tuple[torch.Tensor, float, float]:
     device = state_history.device
     num_actions = len(ACTION_NAMES)
@@ -107,7 +108,11 @@ def cem_plan(
             past_action_history.expand(population, -1, -1),
             future_actions,
         )
-        scores = (final_states - goal).square().mean(dim=-1)
+        scores = (
+            score_function(final_states)
+            if score_function is not None
+            else (final_states - goal).square().mean(dim=-1)
+        )
 
         if iteration == 0:
             initial_mean_score = scores.mean().item()
